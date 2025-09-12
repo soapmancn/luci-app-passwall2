@@ -1,0 +1,153 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'OpenWrt target (matrix override)' 
+        required: false
+      release_tag:
+        description: 'Custom release tag when manually dispatched' 
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Add or adjust OpenWrt target profiles here
+        target:
+          - qualcommax/ipq807x
+          - mediatek/filogic
+    env:
+      PACKAGE_NAME: luci-app-passwall2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalize Manual Dispatch Inputs
+        id: normalize
+        run: |
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            echo "override_target=${{ github.event.inputs.target }}" >> $GITHUB_OUTPUT
+          else
+            echo "override_target=${{ matrix.target }}" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "release_tag=${{ github.event.inputs.release_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-multilib g++-multilib libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget unzip file python3 tar xz-utils zstd ca-certificates
+
+      - name: Derive SDK Download URL
+        id: sdk
+        run: |
+          TARGET="${{ steps.normalize.outputs.override_target }}"
+          BASE_URL="https://downloads.openwrt.org/snapshots/targets"
+          # target format example: qualcommax/ipq807x => qualcommax/ipq807x
+          SDK_URL="$BASE_URL/$TARGET/openwrt-sdk-$(echo $TARGET | tr '/' '-')_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          echo "SDK_URL=$SDK_URL" >> $GITHUB_OUTPUT
+          echo "Using SDK URL: $SDK_URL"
+
+      - name: Download and Extract OpenWrt SDK
+        run: |
+          wget -q "${{ steps.sdk.outputs.SDK_URL }}" -O sdk.tar.zst
+          zstd -d sdk.tar.zst -o sdk.tar
+          tar -xf sdk.tar
+          rm -f sdk.tar sdk.tar.zst
+          mv openwrt-sdk-* openwrt-sdk
+
+      - name: Prepare Package Source
+        run: |
+          mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
+          # Copy typical Passwall2 LuCI package structure (assuming repository mirrors upstream layout)
+          # Adjust these paths if layout differs
+          cp -r luasrc htdocs root Makefile po openwrt-sdk/package/${{ env.PACKAGE_NAME }}/ 2>/dev/null || true
+          # Some passwall2 repos place files under 'luci-app-passwall2' subdir; handle fallback
+          if [ ! -f openwrt-sdk/package/${{ env.PACKAGE_NAME }}/Makefile ]; then
+            find . -maxdepth 2 -type f -name Makefile | grep -F "${{ env.PACKAGE_NAME }}" | head -n1 | while read mk; do
+              PKGDIR=$(dirname "$mk")
+              cp -r "$PKGDIR"/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
+            done
+          fi
+
+      - name: Update Feeds
+        run: |
+          cd openwrt-sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure Build (enable package)
+        run: |
+          cd openwrt-sdk
+          echo "CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m" > .config
+          make defconfig
+
+      - name: Compile Package
+        run: |
+          cd openwrt-sdk
+          make package/${{ env.PACKAGE_NAME }}/compile V=s || { echo 'First build failed, trying again (sometimes network issues)'; make package/${{ env.PACKAGE_NAME }}/compile V=s; }
+
+      - name: Locate Built Artifact
+        id: artifact
+        run: |
+          set -e
+          PKG_PATTERN="openwrt-sdk/bin/packages/*/*/${{ env.PACKAGE_NAME }}_*"
+          FILE=$(ls -1 $PKG_PATTERN 2>/dev/null | head -n1 || true)
+          if [ -z "$FILE" ]; then
+            echo "No package artifact found. Listing directory for debugging:" >&2
+            find openwrt-sdk/bin -maxdepth 5 -type f -print
+            exit 1
+          fi
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "Found artifact: $FILE"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: ${{ steps.artifact.outputs.file }}
+          if-no-files-found: error
+
+      - name: Generate Release Notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "## Passwall2 Package (${ { env.PACKAGE_NAME } })" > RELEASE.md
+          echo >> RELEASE.md
+          echo "Target: ${{ steps.normalize.outputs.override_target }}" >> RELEASE.md
+          echo "Build Time: $(date -u '+%Y-%m-%d %H:%M UTC')" >> RELEASE.md
+          echo >> RELEASE.md
+          echo "### Files" >> RELEASE.md
+          echo "- $(basename ${{ steps.artifact.outputs.file }})" >> RELEASE.md
+          echo >> RELEASE.md
+          echo "### Install" >> RELEASE.md
+          echo '\nTransfer the .ipk to your router and run:' >> RELEASE.md
+          echo '\n```bash' >> RELEASE.md
+          echo 'opkg install $(basename ${{ steps.artifact.outputs.file }})' >> RELEASE.md
+          echo '```' >> RELEASE.md
+          echo >> RELEASE.md
+          echo '### Source' >> RELEASE.md
+          echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" >> RELEASE.md
+          echo "notes_file=RELEASE.md" >> $GITHUB_OUTPUT
+
+      - name: Create or Update Release
+        if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.normalize.outputs.release_tag }}
+          name: Release ${{ steps.normalize.outputs.release_tag }}
+          body_path: ${{ steps.notes.outputs.notes_file }}
+          files: ${{ steps.artifact.outputs.file }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
