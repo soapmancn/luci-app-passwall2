@@ -45,6 +45,8 @@ jobs:
           cp -r upstream-passwall2/luci-app-passwall2 openwrt-sdk-luci-app-passwall2
           echo "Upstream luci-app-passwall2 Makefile path(s):"
           find upstream-passwall2 -maxdepth 3 -type f -name Makefile -path '*luci-app-passwall2*' -print
+          echo "Copied directory contents:"
+          ls -la openwrt-sdk-luci-app-passwall2/ || echo "Directory not found!"
 
       - name: Normalize Manual Dispatch Inputs
         id: normalize
@@ -109,6 +111,10 @@ jobs:
 
       - name: Prepare Package Source
         run: |
+          echo "Current directory contents before prepare:"
+          ls -la
+          echo "Verifying source directory exists:"
+          ls -la openwrt-sdk-luci-app-passwall2/ || echo "Source directory missing!"
           mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
           # Copy upstream source we just cloned (flat directory)
           cp -r openwrt-sdk-luci-app-passwall2/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
