@@ -16,18 +16,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Only build Qualcomm target by default; can still override via workflow_dispatch input
     strategy:
       fail-fast: false
       matrix:
-        # Add or adjust OpenWrt target profiles here
         target:
           - qualcommax/ipq807x
-          - mediatek/filogic
     env:
       PACKAGE_NAME: luci-app-passwall2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Fetch Upstream luci-app-passwall2 Source
+        run: |
+          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall2 upstream-passwall2
+          # Copy only luci-app-passwall2 (UI) package; if you later need core components, copy others too
+          cp -r upstream-passwall2/luci-app-passwall2 openwrt-luci-app-passwall2-src
+          echo "Upstream luci-app-passwall2 files:" 
+          find openwrt-luci-app-passwall2-src -maxdepth 2 -type f -name Makefile -print
 
       - name: Normalize Manual Dispatch Inputs
         id: normalize
@@ -70,15 +77,13 @@ jobs:
       - name: Prepare Package Source
         run: |
           mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
-          # Copy typical Passwall2 LuCI package structure (assuming repository mirrors upstream layout)
-          # Adjust these paths if layout differs
-          cp -r luasrc htdocs root Makefile po openwrt-sdk/package/${{ env.PACKAGE_NAME }}/ 2>/dev/null || true
-          # Some passwall2 repos place files under 'luci-app-passwall2' subdir; handle fallback
+          # Copy upstream source we just cloned
+          cp -r openwrt-luci-app-passwall2-src/luci-app-passwall2/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
+          echo "Package Makefile preview:"; head -n 40 openwrt-sdk/package/${{ env.PACKAGE_NAME }}/Makefile || true
+          # Ensure Makefile really exists
           if [ ! -f openwrt-sdk/package/${{ env.PACKAGE_NAME }}/Makefile ]; then
-            find . -maxdepth 2 -type f -name Makefile | grep -F "${{ env.PACKAGE_NAME }}" | head -n1 | while read mk; do
-              PKGDIR=$(dirname "$mk")
-              cp -r "$PKGDIR"/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
-            done
+            echo "ERROR: luci-app-passwall2 Makefile not found after copy" >&2
+            exit 1
           fi
 
       - name: Update Feeds
@@ -118,12 +123,11 @@ jobs:
           name: ${{ env.PACKAGE_NAME }}-${{ matrix.target }}
           path: ${{ steps.artifact.outputs.file }}
           if-no-files-found: error
-
       - name: Generate Release Notes
         id: notes
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          echo "## Passwall2 Package (${ { env.PACKAGE_NAME } })" > RELEASE.md
+          echo "## Passwall2 Package ($PACKAGE_NAME)" > RELEASE.md
           echo >> RELEASE.md
           echo "Target: ${{ steps.normalize.outputs.override_target }}" >> RELEASE.md
           echo "Build Time: $(date -u '+%Y-%m-%d %H:%M UTC')" >> RELEASE.md
@@ -142,7 +146,7 @@ jobs:
           echo "notes_file=RELEASE.md" >> $GITHUB_OUTPUT
 
       - name: Create or Update Release
-        if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.normalize.outputs.release_tag }}
