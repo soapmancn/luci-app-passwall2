@@ -41,12 +41,10 @@ jobs:
           git fetch --depth=1 origin "$REF" || true
           git checkout "$REF" || git checkout origin/"$REF" || true
           cd ..
-          # Copy the luci-app-passwall2 directory exactly (no extra nesting)
-          cp -r upstream-passwall2/luci-app-passwall2 openwrt-sdk-luci-app-passwall2
           echo "Upstream luci-app-passwall2 Makefile path(s):"
           find upstream-passwall2 -maxdepth 3 -type f -name Makefile -path '*luci-app-passwall2*' -print
-          echo "Copied directory contents:"
-          ls -la openwrt-sdk-luci-app-passwall2/ || echo "Directory not found!"
+          echo "Upstream directory structure:"
+          ls -la upstream-passwall2/luci-app-passwall2/ || echo "luci-app-passwall2 not found in upstream!"
 
       - name: Normalize Manual Dispatch Inputs
         id: normalize
@@ -113,11 +111,13 @@ jobs:
         run: |
           echo "Current directory contents before prepare:"
           ls -la
-          echo "Verifying source directory exists:"
-          ls -la openwrt-sdk-luci-app-passwall2/ || echo "Source directory missing!"
+          echo "Checking upstream-passwall2 contents:"
+          ls -la upstream-passwall2/
+          echo "Verifying luci-app-passwall2 exists in upstream:"
+          ls -la upstream-passwall2/luci-app-passwall2/ || echo "luci-app-passwall2 directory missing!"
           mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
-          # Copy upstream source we just cloned (flat directory)
-          cp -r openwrt-sdk-luci-app-passwall2/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
+          # Copy directly from upstream-passwall2/luci-app-passwall2
+          cp -r upstream-passwall2/luci-app-passwall2/* openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
           echo "Package Makefile preview:"; head -n 40 openwrt-sdk/package/${{ env.PACKAGE_NAME }}/Makefile || true
           # Ensure Makefile really exists
           if [ ! -f openwrt-sdk/package/${{ env.PACKAGE_NAME }}/Makefile ]; then
