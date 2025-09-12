@@ -71,18 +71,41 @@ jobs:
         run: |
           TARGET="${{ steps.normalize.outputs.override_target }}"
           BASE_URL="https://downloads.openwrt.org/snapshots/targets"
-          # target format example: qualcommax/ipq807x => qualcommax/ipq807x
-          SDK_URL="$BASE_URL/$TARGET/openwrt-sdk-$(echo $TARGET | tr '/' '-')_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          TARGET_PATH="$BASE_URL/$TARGET"
+          echo "Listing SDK directory: $TARGET_PATH" >&2
+          INDEX_HTML=$(curl -fsSL "$TARGET_PATH/") || { echo "Failed to fetch index for $TARGET_PATH" >&2; exit 1; }
+          # Grep for sdk tarballs; prefer musl toolchain
+          SDK_FILE=$(echo "$INDEX_HTML" | grep -oE 'openwrt-sdk-[^" ]+\.tar\.zst' | sort -u | head -n1)
+          if [ -z "$SDK_FILE" ]; then
+            echo "Could not auto-detect SDK filename, falling back to pattern." >&2
+            SDK_FILE="openwrt-sdk-$(echo $TARGET | tr '/' '-')_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          fi
+          SDK_URL="$TARGET_PATH/$SDK_FILE"
+          echo "Auto-detected SDK file: $SDK_FILE" >&2
           echo "SDK_URL=$SDK_URL" >> $GITHUB_OUTPUT
           echo "Using SDK URL: $SDK_URL"
 
       - name: Download and Extract OpenWrt SDK
         run: |
+          set -e
+          echo "Downloading SDK: ${{ steps.sdk.outputs.SDK_URL }}" >&2
           wget -q "${{ steps.sdk.outputs.SDK_URL }}" -O sdk.tar.zst
+          ls -l sdk.tar.zst
           zstd -d sdk.tar.zst -o sdk.tar
+          echo "Extracting tar..." >&2
+          tar -tf sdk.tar | head -n20
           tar -xf sdk.tar
           rm -f sdk.tar sdk.tar.zst
-          mv openwrt-sdk-* openwrt-sdk
+          # Detect extracted directory (the first top-level entry starting with openwrt-sdk)
+          SDK_DIR=$(ls -1d openwrt-sdk-* 2>/dev/null | head -n1 || true)
+          if [ -z "$SDK_DIR" ]; then
+            echo "ERROR: Cannot find extracted openwrt-sdk-* directory. Listing current dir:" >&2
+            ls -al
+            exit 1
+          fi
+            echo "Found SDK dir: $SDK_DIR" >&2
+          mv "$SDK_DIR" openwrt-sdk
+          test -d openwrt-sdk || { echo "ERROR: move failed" >&2; exit 1; }
 
       - name: Prepare Package Source
         run: |
